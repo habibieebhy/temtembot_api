@@ -38,195 +38,92 @@ const validateApiKey = async (req: any, res: any, next: any) => {
 };
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  const server = createServer(app);
-  const io = new SocketIOServer(server, {
-    cors: {
-      origin: [
-        'http://localhost:3000',
-        'http://localhost:8000',
-        'https://mycoco.site',
-        'https://telegram-chat-api.onrender.com',
-        'https://tele-bot-test.onrender.com',
-        'https://temtembot-api-ai.onrender.com',
-        // Development fallbacks
-        process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '',
-        process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000' : '',
-      ].filter(Boolean),
-      methods: ["GET", "POST"],
-      credentials: true,
-      allowedHeaders: ["Content-Type", "Authorization"]
-    },
-    transports: ['websocket', 'polling'],
-    allowEIO3: true,
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    connectTimeout: 45000,
-    maxHttpBufferSize: 1e6 // 1MB
-  });
-
-  // Store socket sessions
-  const socketSessions = new Map<string, any>();
-
-  // Socket.IO connection handling
-  io.on('connection', (socket) => {
-    console.log('🔌 New socket connection:', socket.id);
-
-    // Handle session joining
-    socket.on('join-session', (sessionId: string, userData?: any) => {
-      try {
-        console.log(`👤 User joined session: ${sessionId}`);
-
-        // Validate sessionId
-        if (!sessionId || typeof sessionId !== 'string') {
-          console.error('❌ Invalid sessionId:', sessionId);
-          socket.emit('error', { message: 'Invalid session ID' });
-          return;
-        }
-
-        // Store session info
-        socketSessions.set(sessionId, {
-          socketId: socket.id,
-          userId: userData?.userEmail || `anonymous_${Date.now()}`,
-          sessionId,
-          joinedAt: new Date(),
-          lastActivity: new Date()
-        });
-
-        // Join socket room for this session
-        socket.join(sessionId);
-
-        // Set session reference on socket
-        socket.data.sessionId = sessionId;
-
-        // Confirm session joined
-        socket.emit('session-joined', { sessionId, status: 'connected' });
-
-      } catch (error) {
-        console.error('❌ Error joining session:', error);
-        socket.emit('error', { message: 'Failed to join session' });
-      }
-    });
-
-    // Handle incoming messages from web users
-    socket.on('send-message', async (data: { sessionId: string; message: string; userEmail?: string }) => {
-      try {
-        console.log('📨 Web message received:', data);
-
-        // Validate input data
-        if (!data || !data.sessionId || !data.message) {
-          console.error('❌ Invalid message data:', data);
-          socket.emit('error', { message: 'Invalid message data' });
-          return;
-        }
-
-        // Get session info
-        const session = socketSessions.get(data.sessionId);
-        if (!session) {
-          console.error('❌ Session not found:', data.sessionId);
-          socket.emit('error', { message: 'Session not found. Please refresh the page.' });
-          return;
-        }
-
-        // Update last activity
-        session.lastActivity = new Date();
-        socketSessions.set(data.sessionId, session);
-
-        // Send typing indicator to user (not bot)
-        socket.emit('bot-typing');
-
-        // Route message to Telegram bot for processing
-        const botResponse = await telegramBot.handleWebUserMessage({
-          sessionId: data.sessionId,
-          message: data.message.trim(),
-          userId: data.userEmail || session.userId,
-          socketId: socket.id
-        });
-
-        // Send bot response back to web user
-        if (botResponse) {
-          io.to(data.sessionId).emit('bot-message', {
-            sessionId: data.sessionId,
-            message: botResponse,
-            timestamp: new Date().toISOString()
-          });
-        } else {
-          // Fallback if no response
-          io.to(data.sessionId).emit('bot-message', {
-            sessionId: data.sessionId,
-            message: 'I received your message. How can I help you with construction materials?',
-            timestamp: new Date().toISOString()
-          });
-        }
-
-      } catch (error) {
-        console.error('❌ Error handling web message:', error);
-
-        // Send error message to user
-        socket.emit('bot-message', {
-          sessionId: data?.sessionId || 'unknown',
-          message: 'Sorry, there was an error processing your message. Please try again.',
-          timestamp: new Date().toISOString(),
-          isError: true
-        });
-      }
-    });
-
-    // Handle disconnection
-    socket.on('disconnect', (reason) => {
-      console.log('🔌 Socket disconnected:', socket.id, 'Reason:', reason);
-
-      try {
-        // Clean up session if exists
-        if (socket.data.sessionId) {
-          const session = socketSessions.get(socket.data.sessionId);
-          if (session && session.socketId === socket.id) {
-            // Don't delete immediately - keep for potential reconnection
-            session.disconnectedAt = new Date();
-            socketSessions.set(socket.data.sessionId, session);
-            console.log(`📋 Marked session as disconnected: ${socket.data.sessionId}`);
-
-            // Clean up after 5 minutes
-            setTimeout(() => {
-              const currentSession = socketSessions.get(socket.data.sessionId);
-              if (currentSession && currentSession.disconnectedAt) {
-                socketSessions.delete(socket.data.sessionId);
-                console.log(`🗑️ Cleaned up session: ${socket.data.sessionId}`);
-              }
-            }, 5 * 60 * 1000); // 5 minutes
-          }
-        }
-      } catch (error) {
-        console.error('❌ Error during disconnect cleanup:', error);
-      }
-    });
-
-    // Handle errors
-    socket.on('error', (error) => {
-      console.error('🚨 Socket error:', error);
-    });
-
-    // Handle ping for connection health
-    socket.on('ping', () => {
-      socket.emit('pong');
-    });
-  });
-
-  // Error handling for Socket.IO server
-  io.on('error', (error) => {
-    console.error('🚨 Socket.IO server error:', error);
-  });
-
-  // Pass io instance to telegram bot for sending messages back to web users
-  try {
-    telegramBot.setSocketIO(io, socketSessions);
-    console.log('✅ Socket.IO instance passed to Telegram bot');
-  } catch (error) {
-    console.error('❌ Failed to set Socket.IO on Telegram bot:', error);
-  }
 
   // Start both bots
   await whatsappBot.start();
   await telegramBot.start();
+
+  // 🌐 ADD Socket.IO setup (new code)
+  const server = createServer(app);
+  const io = new SocketIOServer(server, {
+    cors: {
+      origin: [
+    'http://localhost:3000',
+    'http://localhost:8000',
+    'https://mycoco.site',
+    'https://telegram-chat-api.onrender.com',
+    'https://tele-bot-test.onrender.com',
+    'https://temtembot-api-ai.onrender.com',
+    // Add development fallbacks
+    process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '',
+    process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000' : '',
+  ].filter(Boolean),
+      methods: ["GET", "POST"]
+    }
+  });
+
+  global.io = io;
+
+  // Connect Socket.IO to telegram bot
+  telegramBot.setSocketIO(io);
+
+  console.log('✅ Socket.IO server initialized and listening');
+  console.log('🔍 CORS settings:', {
+    origin: [
+    'http://localhost:3000',
+    'http://localhost:8000',
+    'https://mycoco.site',
+    'https://telegram-chat-api.onrender.com',
+    'https://tele-bot-test.onrender.com',
+    'https://temtembot-api-ai.onrender.com',
+    // Add development fallbacks
+    process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '',
+    process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000' : '',
+  ].filter(Boolean),
+    methods: ["GET", "POST"]
+  });
+
+  // Basic Socket.IO connection handler
+  io.on('connection', (socket) => {
+    console.log('🌐 Client connected successfully:', socket.id);
+    console.log('🔍 Connection details:', {
+      id: socket.id,
+      handshake: socket.handshake.address,
+      transport: socket.conn.transport.name
+    });
+
+    // Handle web messages (from your frontend test page)
+    socket.on('web_message', async (data) => {
+      console.log('📨 Web message received:', data.text);
+      console.log('🔍 Socket ID:', socket.id);
+
+      const mockTelegramMessage = {
+        chat: { id: `web_${socket.id}` },
+        from: { id: `web_${socket.id}`, first_name: 'Web User' },
+        text: data.text
+      };
+
+      try {
+        await telegramBot.handleIncomingMessage(mockTelegramMessage);
+        console.log('✅ handleIncomingMessage call completed');
+      } catch (error) {
+        console.error('❌ Error in handleIncomingMessage:', error);
+      }
+    });
+
+    // Handle join-session (from other clients)
+    socket.on('join-session', (sessionId) => {
+      socket.join(`session-${sessionId}`);
+      console.log(`Client ${socket.id} joined session: ${sessionId}`);
+    });
+
+    // Handle disconnection
+    socket.on('disconnect', () => {
+      console.log('❌ Client disconnected:', socket.id);
+    });
+  });
+
+  console.log('✅ Socket.IO server initialized');
 
   // WhatsApp webhook endpoint for incoming messages
   app.post("/webhook/whatsapp", async (req, res) => {
@@ -369,7 +266,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/setup-webhook', async (req, res) => {
     try {
       // Use your ngrok URL
-      const webhookUrl = 'https://a7e6-2405-201-a805-30d9-d4e0-c7a1-f52b-454c.ngrok-free.app/webhook/telegram';
+      const webhookUrl = 'https://temtembot-api-ai.onrender.com/webhook/telegram';
       console.log('🔗 Setting up webhook for:', webhookUrl);
 
       const info = await telegramBot.setupWebhook(webhookUrl);
@@ -1280,33 +1177,11 @@ Inquiry ID: ${inquiryId || 'undefined'}`;
     }
   });
 
-  //const httpServer = createServer(app);
+  const httpServer = createServer(app);
 
-  // Add Socket.IO support
-  // const io = new SocketIOServer(httpServer, {
-  //   cors: {
-  //     origin: "*",
-  //     methods: ["GET", "POST"]
-  //   }
-  // });
+  // WebSocket connection handling
+  telegramBot.setSocketIO(io);
+  // Make io available globally for routes
 
-  // // WebSocket connection handling
-  // io.on('connection', (socket) => {
-  //   console.log('Client connected:', socket.id);
-
-  //   // Join chat session room
-  //   socket.on('join-session', (sessionId) => {
-  //     socket.join(`session-${sessionId}`);
-  //     console.log(`Client ${socket.id} joined session: ${sessionId}`);
-  //   });
-
-  //   socket.on('disconnect', () => {
-  //     console.log('Client disconnected:', socket.id);
-  //   });
-  // });
-
-  // // Make io available globally for routes
-  // global.io = io;
-
-  return server;
+  return httpServer;
 }

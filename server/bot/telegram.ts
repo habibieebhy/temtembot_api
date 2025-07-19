@@ -1,6 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { storage } from "../storage";
 import { AIService } from './aiService';
+import { Server as SocketIOServer } from 'socket.io';
 
 
 export interface TelegramBotConfig {
@@ -15,206 +16,26 @@ export class TelegramBotService {
   private standardQuotes: Map<string, any> = new Map();
   private autoQuoteTimers: Map<string, NodeJS.Timeout> = new Map();
   private standardQuoteSessions: Map<string, any> = new Map();
-  private io: any = null;
-  private socketSessions: Map<string, any> = new Map();
-  private webUserSessions: Map<string, any> = new Map();
+  private io?: SocketIOServer;
   private token: string;
-
+  private webClients: Map<string, any> = new Map();
+  private webUserSessions: Map<string, any> = new Map();
   private aiService: AIService;
 
   constructor(config: TelegramBotConfig) {
     this.token = config.token;
-    // ADD THIS LINE HERE ↓
+    // ADD THIS LINE HERE
     this.aiService = new AIService(process.env.OPENROUTER_API_KEY || '');
   }
-
-  setSocketIO(io: any, socketSessions: Map<string, any>) {
+  // ADD this method RIGHT HERE (after constructor)
+  setSocketIO(io: SocketIOServer) {
     this.io = io;
-    this.socketSessions = socketSessions;
-    console.log('✅ Socket.IO instance set for Telegram bot');
+    console.log('🔗 Socket.IO connected to Telegram bot');
+
+    // Add web message handling
+    this.setupWebMessageHandling();
   }
 
-  async handleWebUserMessage(data: {
-    sessionId: string;
-    message: string;
-    userId: string;
-    socketId: string
-  }): Promise<string | null> {
-    try {
-      console.log('🌐 Processing web user message:', data);
-      // Store or update web user session
-      this.webUserSessions.set(data.sessionId, {
-        userId: data.userId,
-        socketId: data.socketId,
-        lastActivity: new Date(),
-        sessionId: data.sessionId
-      });
-      // Create a mock Telegram message object for consistency
-      const mockTelegramMessage = {
-        message_id: Date.now(),
-        from: {
-          id: parseInt(data.sessionId.replace(/\D/g, '').slice(-9)) || 999999999, // Generate numeric ID from session
-          first_name: data.userId.split('@')[0] || 'WebUser',
-          username: data.userId,
-          is_bot: false
-        },
-        chat: {
-          id: parseInt(data.sessionId.replace(/\D/g, '').slice(-9)) || 999999999,
-          type: 'private' as const
-        },
-        date: Math.floor(Date.now() / 1000),
-        text: data.message,
-        // Add web user flag
-        isWebUser: true,
-        webSessionId: data.sessionId
-      };
-      // Process the message using existing bot logic
-      const response = await this.processUserMessage(mockTelegramMessage);
-
-      return response;
-    } catch (error) {
-      console.error('❌ Error handling web user message:', error);
-      return 'Sorry, I encountered an error processing your message. Please try again.';
-    }
-  }
-  // Add this helper method to process user messages (web or Telegram)
-  // REPLACE the entire processUserMessage method with this:
-  private async processUserMessage(msg: any): Promise<string | null> {
-    const isWebUser = msg.isWebUser || false;
-
-    if (isWebUser) {
-      // For web users, we need to capture the response
-      // Store the original sendMessage method
-      const originalSendMessage = this.sendMessage.bind(this);
-      let capturedResponse = "";
-
-      // Temporarily override sendMessage to capture responses
-      this.sendMessage = async (chatId: number, message: string) => {
-        capturedResponse = message;
-        console.log(`📤 Captured response for web user: ${message}`);
-        return Promise.resolve(null as any);
-      };
-
-      try {
-        // Use your existing handleIncomingMessage logic
-        await this.handleIncomingMessage(msg);
-
-        // Restore original sendMessage
-        this.sendMessage = originalSendMessage;
-
-        // Return the captured response
-        return capturedResponse || "I received your message. How can I help you with construction materials?";
-
-      } catch (error) {
-        // Restore original sendMessage
-        this.sendMessage = originalSendMessage;
-        console.error('Error in processUserMessage:', error);
-        return "Sorry, there was an error processing your message. Please try again.";
-      }
-    } else {
-      // For Telegram users, use existing logic normally
-      await this.handleIncomingMessage(msg);
-      return null;
-    }
-  }
-  // Alternative: Add a simple chat completion method to your telegram service
-  private async getSimpleChatResponse(userMessage: string): Promise<string> {
-    try {
-      // Use the existing AI service structure to get a general response
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek/deepseek-chat',
-          messages: [
-            {
-              role: 'system',
-              content: 'You are CemTemBot, a helpful assistant for construction material quotes. Keep responses brief, helpful, and focused on cement, TMT bars, and construction materials. Always guide users toward getting quotes or registering as vendors.'
-            },
-            { role: 'user', content: userMessage }
-          ],
-          temperature: 0.7,
-          max_tokens: 150
-        })
-      });
-      const result = await response.json();
-      return result.choices[0].message.content || "I'm here to help with construction material quotes. What do you need?";
-    } catch (error) {
-      console.error('Chat completion error:', error);
-      return "I'm here to help with construction materials. What do you need quotes for?";
-    }
-  }
-  // Helper method for material inquiries
-  private async handleMaterialInquiry(msg: any, isWebUser: boolean): Promise<string | null> {
-    const text = msg.text.toLowerCase();
-    let material = 'cement';
-
-    if (text.includes('tmt')) {
-      material = 'tmt';
-    }
-    const response = `Great! I'll help you get quotes for ${material}.
-Which city/location do you need these materials in?
-Please select your location from the dropdown or type: CityName:LocalityName
-For example: Mumbai:Andheri or Delhi:Rohini`;
-    if (isWebUser) {
-      return response;
-    } else {
-      await this.sendMessage(msg.chat.id, response);
-      return null;
-    }
-  }
-  // Helper method for location selection
-  private async handleLocationSelection(msg: any, isWebUser: boolean): Promise<string | null> {
-    const [city, locality] = msg.text.split(':');
-
-    const response = `📍 Location confirmed: ${city}, ${locality}
-🔍 I'm now searching for available vendors in your area...
-This may take a moment while I connect with our network of verified suppliers.`;
-    // Simulate inquiry creation
-    setTimeout(async () => {
-      const inquiryId = `INQ-${Date.now()}`;
-      const quoteResponse = `✅ Your inquiry has been created!
-📋 **Inquiry Details:**
-🏗️ Material: Cement
-📍 Location: ${city}, ${locality}  
-🆔 Inquiry ID: ${inquiryId}
-🔄 I've sent your requirement to verified vendors in your area. You'll receive quotes shortly!
-💡 **What happens next?**
-• Vendors will review your requirement
-• You'll receive competitive quotes
-• Compare and choose the best offer`;
-      if (isWebUser && msg.webSessionId) {
-        // Send follow-up message to web user
-        if (this.io) {
-          this.io.to(msg.webSessionId).emit('bot-message', {
-            sessionId: msg.webSessionId,
-            message: quoteResponse
-          });
-        }
-      } else {
-        await this.sendMessage(msg.chat.id, quoteResponse);
-      }
-    }, 2000);
-    if (isWebUser) {
-      return response;
-    } else {
-      await this.sendMessage(msg.chat.id, response);
-      return null;
-    }
-  }
-  // Method to send messages to web users
-  async sendMessageToWebUser(sessionId: string, message: string) {
-    if (this.io) {
-      this.io.to(sessionId).emit('bot-message', {
-        sessionId,
-        message
-      });
-      console.log(`📤 Sent message to web user ${sessionId}`);
-    }
-  }
 
   private initializeBot() {
     if (this.bot) return;
@@ -496,6 +317,50 @@ Inquiry ID: ${inquiryId}`);
 
     return false;
   }
+
+  // 3. Add this new method:
+  private setupWebMessageHandling() {
+    if (!this.io) return;
+    this.io.on('connection', (socket) => {
+      console.log('🌐 Web client connected:', socket.id);
+
+      // Store web client
+      this.webClients.set(socket.id, {
+        socketId: socket.id,
+        connected: true,
+        joinedAt: new Date()
+      });
+      // Handle web messages using your EXISTING handleIncomingMessage
+      socket.on('web_message', async (data) => {
+        console.log('🔵 Web message received:', socket.id, ':', data.text);
+
+        // Create mock Telegram message
+        const mockMsg = {
+          chat: { id: `web_${socket.id}` },
+          text: data.text,
+          from: { id: `web_${socket.id}`, username: 'web_user' }
+        };
+
+        // Use your EXISTING handleIncomingMessage - no changes!
+        await this.handleIncomingMessage(mockMsg);
+      });
+      socket.on('disconnect', () => {
+        console.log('🌐 Web client disconnected:', socket.id);
+        this.webClients.delete(socket.id);
+        this.webUserSessions.delete(socket.id);
+      });
+    });
+  }
+
+  private getWebUserSession(socketId: string) {
+    let session = this.webUserSessions.get(socketId);
+    if (!session) {
+      session = { step: 'start' }; // Same as your Telegram sessions
+      this.webUserSessions.set(socketId, session);
+    }
+    return session;
+  }
+
 
   private setupCallbackQueryHandlers() {
     if (!this.bot) return;
@@ -889,169 +754,385 @@ More quotes may follow from other vendors!`;
       await this.handleDeliverySelection(chatId, `delivery_${numericValue}_${inquiryId}`, session.messageId || 0);
     }
   }
-
-  // Add this method to handle the original message processing
   async handleIncomingMessage(msg: any) {
-    try {
-      const chatId = msg.chat.id;
-      const text = msg.text;
-      const isWebUser = msg.isWebUser || false;
+    if (!this.isActive || !this.bot) return;
 
-      console.log(`📥 Processing ${isWebUser ? 'web' : 'telegram'} message:`, text);
+    const chatId = msg.chat.id;
+    const text = msg.text;
 
-      // Check if it's a vendor rate response first
-      const isRateResponse = await this.handleVendorRateResponse(msg);
-      if (isRateResponse) {
-        return; // Rate response handled, exit early
-      }
+    // ADD THIS LINE HERE:
+    let userSession = this.userSessions.get(chatId.toString()) || { step: 'start' };
 
-      // Get or create user session
-      const sessionKey = chatId.toString();
-      let session = this.userSessions.get(sessionKey) || {};
+    // 🆕 NEW: Check if this is an API message first
+    if (text?.startsWith('[API]')) {
+      await this.handleApiMessage(chatId, text);
+      return;
+    }
 
-      // Initialize session if new
-      if (!session.step) {
-        session = {
-          step: 'initial',
-          chatId,
-          startTime: new Date(),
-          messageCount: 0
-        };
-      }
+    // Handle /start command first - ALWAYS reset session
+    if (text === '/start') {
+      this.userSessions.delete(chatId.toString());
+      const response = `🏗️ Welcome to CemTemBot! 
 
-      session.messageCount = (session.messageCount || 0) + 1;
-      session.lastMessage = text;
-      session.lastActivity = new Date();
+I help you get instant pricing for cement and TMT bars from verified vendors in your city.
 
-      // Check if user is a registered vendor
-      const isVendor = await this.isRegisteredVendor(chatId);
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
 
-      // Handle vendor-specific messages
-      if (isVendor) {
-        // Check for natural language quote updates
-        if (await this.handleNaturalQuoteUpdate(chatId, text)) {
+Reply with 1 or 2`;
+
+      this.userSessions.set(chatId.toString(), { step: 'user_type' });
+      await this.sendMessage(chatId, response);
+      return;
+    }
+
+    // Handle /help command
+    if (text === '/help') {
+      await this.sendMessage(chatId, `🤖 PriceBot Help:
+
+Commands:
+/start - Start a new pricing inquiry
+/help - Show this help message
+
+For Vendors: To submit a quote, use this format:
+**RATE: [Price] per [Unit]**
+**GST: [Percentage]%**
+**DELIVERY: [Charges]**
+
+Example:
+RATE: 350 per bag
+GST: 18%
+DELIVERY: 50
+Inquiry ID: INQ-123456789
+
+Simply send /start to begin!`);
+      return;
+    }
+
+    // First check if this is a vendor rate response
+    const isRateResponse = await this.handleVendorRateResponse(msg);
+    if (isRateResponse) {
+      return; // Don't process as regular conversation
+    }
+
+    // ADD THIS NEW SECTION:
+    // Check for natural language quote updates from vendors
+    if (text && (userSession.userType === 'vendor' || await this.isRegisteredVendor(chatId))) {
+      const messageClassification = await this.aiService.classifyMessageType(text);
+      console.log(`🤖 Message classified as: ${messageClassification.messageType} (confidence: ${messageClassification.confidence})`);
+      if (messageClassification.messageType === 'vendor_rate_update' && messageClassification.confidence > 0.8) {
+        const handled = await this.handleNaturalQuoteUpdate(chatId, text);
+        if (handled) {
           return;
         }
+      }
+      // 🆕 NEW: Check if this is custom input for quote session
+      const sessionKey = `quote_session_${chatId}`;
+      const quoteSession = this.quoteSessions.get(sessionKey);
+      if (quoteSession && quoteSession.waitingForCustom) {
+        await this.handleCustomQuoteInput(chatId, text, quoteSession);
+        return; // Don't process as regular conversation
+      }
 
-        // Check for sale entry
-        if (text.toLowerCase().includes('sold') || text.toLowerCase().includes('delivered') || text.toLowerCase().includes('supplied')) {
-          await this.handleSaleEntry(chatId, text, session);
-          return;
+
+      // 🤖 AI PREPROCESSING 
+      // 🆕 NEW: Check if this is a sale entry first
+      if (text && (text.toLowerCase().includes('sold') || text.toLowerCase().includes('sale') || text.toLowerCase().includes('delivered') || text.toLowerCase().includes('supplied') || text.startsWith('/sale'))) {
+        await this.handleSaleEntry(chatId, text, userSession);
+        return;
+      }
+
+      if (text && text !== '/start' && text !== '/help' && userSession.step !== 'vendor_confirm' && userSession.step !== 'confirm') {
+        try {
+          const aiResult = await this.aiService.extractInformation(text, userSession.step);
+          if (aiResult.extracted && aiResult.confidence > 0.7) {
+            console.log('🤖 AI extracted:', aiResult.data);
+            Object.assign(userSession, aiResult.data);
+            userSession.step = aiResult.suggestedStep;
+            console.log(`🚀 AI jumped to step: ${userSession.step}`);
+            console.log(`🔍 DEBUG: After AI - userSession:`, userSession);
+          }
+        } catch (error) {
+          console.log('🤖 AI extraction failed, continuing with manual flow');
         }
       }
 
-      // Use AI to classify message type
-      const classification = await this.aiService.classifyMessageType(text);
-      console.log('🤖 Message classification:', classification);
+      console.log(`🔄 Processing message from ${chatId}: "${text}" (step: ${userSession.step})`);
 
-      // Handle based on classification
-      switch (classification.messageType) {
-        case 'customer_inquiry':
-          await this.handleCustomerInquiry(chatId, text, session);
-          break;
+      let response = '';
 
-        case 'vendor_registration':
-          await this.handleVendorRegistration(chatId, text, session);
-          break;
+      switch (userSession.step) {
+        case 'start':
+          if (text?.toLowerCase().includes('hello') || text?.toLowerCase().includes('hi')) {
+            response = `🏗️ Welcome to CemTemBot! 
 
-        case 'vendor_rate_update':
-          if (isVendor) {
-            await this.handleNaturalQuoteUpdate(chatId, text);
+I help you get instant pricing for cement and TMT bars from verified vendors in your city.
+
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
+
+Reply with 1 or 2`;
+            userSession.step = 'user_type';
           } else {
-            await this.sendMessage(chatId, "Please register as a vendor first using /vendor command.");
+            response = `👋 Hello! Send /start to get started with pricing inquiries.`;
           }
           break;
 
-        case 'sale_entry':
-          if (isVendor) {
-            await this.handleSaleEntry(chatId, text, session);
+        case 'user_type':
+          if (text === '1' || text?.toLowerCase().includes('buyer')) {
+            userSession.userType = 'buyer';
+            userSession.step = 'get_city';
+            response = `Great! I'll help you find prices in your city.
+
+📍 Which city are you in?
+
+Available cities: Guwahati, Mumbai, Delhi
+
+Please enter your city name:`;
+          } else if (text === '2' || text?.toLowerCase().includes('vendor')) {
+            userSession.userType = 'vendor';
+            userSession.step = 'vendor_name';
+            response = `👨‍💼 Great! Let's register you as a vendor.
+
+What's your business/company name?`;
           } else {
-            await this.sendMessage(chatId, "Please register as a vendor first to record sales.");
+            response = `Please reply with:
+1 - if you're a Buyer
+2 - if you're a Vendor`;
+          }
+          break;
+
+        case 'vendor_name':
+          userSession.vendorName = text?.trim();
+          userSession.step = 'vendor_city';
+          response = `📍 Business Name: ${userSession.vendorName}
+
+Which city do you operate in?
+
+Available cities: Guwahati, Mumbai, Delhi
+
+Enter your city:`;
+          break;
+
+        case 'vendor_city':
+          userSession.vendorCity = text?.trim();
+          userSession.step = 'vendor_materials';
+          response = `📍 City: ${userSession.vendorCity}
+
+What materials do you supply?
+
+1️⃣ Cement only
+2️⃣ TMT Bars only  
+3️⃣ Both Cement and TMT Bars
+
+Reply with 1, 2, or 3:`;
+          break;
+
+        case 'vendor_materials':
+          if (text === '1') {
+            userSession.materials = ['cement'];
+          } else if (text === '2') {
+            userSession.materials = ['tmt'];
+          } else if (text === '3') {
+            userSession.materials = ['cement', 'tmt'];
+          } else {
+            response = `Please select:
+1 - Cement only
+2 - TMT Bars only
+3 - Both materials`;
+            break;
+          }
+          userSession.step = 'vendor_phone';
+          response = `📋 Materials: ${userSession.materials.join(', ').toUpperCase()}
+
+What's your contact phone number?
+
+Enter your phone number (with country code if international):`;
+          break;
+
+        case 'vendor_phone':
+          userSession.vendorPhone = text?.trim();
+          userSession.step = 'vendor_confirm';
+
+          const materialsText = userSession.materials.join(' and ').toUpperCase();
+          response = `✅ Please confirm your vendor registration:
+
+🏢 Business: ${userSession.vendorName}
+📍 City: ${userSession.vendorCity}
+🏗️ Materials: ${materialsText}
+📞 Phone: ${userSession.vendorPhone}
+
+Reply "confirm" to register or "restart" to start over:`;
+          break;
+
+        case 'vendor_confirm':
+          if (text?.toLowerCase().trim() === 'confirm') {
+            try {
+              await this.processVendorRegistration(chatId, userSession);
+              response = `🎉 Vendor registration successful!
+
+Welcome to our vendor network, ${userSession.vendorName}!
+
+📋 Vendor ID: VEN-${Date.now()}
+
+You'll start receiving pricing inquiries for ${userSession.materials.join(' and ').toUpperCase()} in ${userSession.vendorCity} via Telegram.
+
+When you receive an inquiry, reply with your quote in this format:
+
+**RATE: [Price] per [Unit]**
+**GST: [Percentage]%**  
+**DELIVERY: [Charges]**
+
+Example:
+RATE: 350 per bag
+GST: 18%
+DELIVERY: 50
+Inquiry ID: INQ-123456789
+
+Send /start anytime for help or to update your information.`;
+              // Clear session after successful registration
+              this.userSessions.delete(chatId.toString());
+            } catch (error) {
+              console.error('Vendor registration failed:', error);
+              response = `❌ Registration failed. Please try again by sending /start`;
+              this.userSessions.delete(chatId.toString());
+            }
+          } else if (text?.toLowerCase().trim() === 'restart') {
+            userSession.step = 'user_type';
+            response = `🔄 Let's start over!
+
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
+
+Reply with 1 or 2`;
+          } else {
+            response = `Please reply "confirm" to complete registration or "restart" to start over.`;
+          }
+          break;
+
+        case 'get_city':
+          userSession.city = text?.trim();
+          userSession.step = 'get_material';
+          response = `📍 City: ${userSession.city}
+
+What are you looking for?
+
+1️⃣ Cement
+2️⃣ TMT Bars
+
+Reply with 1 or 2:`;
+          break;
+
+        case 'get_material':
+          if (text === '1' || text?.toLowerCase().includes('cement')) {
+            userSession.material = 'cement';
+          } else if (text === '2' || text?.toLowerCase().includes('tmt')) {
+            userSession.material = 'tmt';
+          } else {
+            response = `Please select:
+1 - for Cement
+2 - for TMT Bars`;
+            break;
+          }
+          userSession.step = 'get_brand';
+          response = `🏷️ Any specific brand preference?
+
+For ${userSession.material}:
+- Enter brand name (e.g., ACC, Ambuja, UltraTech)
+- Or type "any" for any brand`;
+          break;
+
+        case 'get_brand':
+          userSession.brand = text?.toLowerCase() === 'any' ? null : text?.trim();
+          userSession.step = 'get_quantity';
+          response = `📦 How much quantity do you need?
+
+Examples:
+- 50 bags
+- 2 tons
+- 100 pieces
+
+Enter quantity:`;
+          break;
+
+        case 'get_quantity':
+          userSession.quantity = text?.trim();
+          userSession.step = 'confirm';
+
+          const brandText = userSession.brand ? `Brand: ${userSession.brand}` : 'Brand: Any';
+          response = `✅ Please confirm your inquiry:
+
+📍 City: ${userSession.city}
+🏗️ Material: ${userSession.material.toUpperCase()}
+${brandText}
+📦 Quantity: ${userSession.quantity}
+
+Reply "confirm" to send to vendors or "restart" to start over:`;
+          break;
+
+        case 'confirm':
+          if (text?.toLowerCase().trim() === 'confirm') {
+            await this.processInquiry(chatId, userSession);
+            response = `🚀 Your inquiry has been sent!
+
+We've contacted vendors in ${userSession.city} for ${userSession.material} pricing. You should receive quotes shortly via Telegram.
+
+📊 Inquiry ID: INQ-${Date.now()}
+
+Vendors will reply directly to you with quotes in this format:
+💰 Rate: ₹X per unit
+📊 GST: X%
+🚚 Delivery: ₹X
+
+Send /start for a new inquiry anytime!`;
+            this.userSessions.delete(chatId.toString());
+          } else if (text?.toLowerCase().trim() === 'restart') {
+            userSession.step = 'user_type';
+            response = `🔄 Let's start over!
+
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
+
+Reply with 1 or 2`;
+          } else {
+            response = `Please reply "confirm" to send your inquiry or "restart" to start over.`;
           }
           break;
 
         default:
-          await this.handleGeneralMessage(chatId, text, session);
+          response = `👋 Hello! Send /start to begin a new pricing inquiry.`;
+          this.userSessions.delete(chatId.toString());
+
+        case 'sale_confirm':
+          if (text?.toLowerCase().trim() === 'confirm') {
+            try {
+              await this.processSaleEntry(chatId, userSession.pendingSale);
+              response = `✅ **Sale saved successfully!**
+
+Sale ID: SALE-${Date.now()}
+
+Your sale has been recorded in the system. You can add another sale anytime by sending sale details or using /sale command.`;
+              this.userSessions.delete(chatId.toString());
+            } catch (error) {
+              console.error('Sale processing failed:', error);
+              response = `❌ Failed to save sale. Please try again.`;
+              this.userSessions.delete(chatId.toString());
+            }
+          } else if (text?.toLowerCase().trim() === 'cancel') {
+            response = `❌ Sale entry cancelled.`;
+            this.userSessions.delete(chatId.toString());
+          } else {
+            response = `Please reply "confirm" to save the sale or "cancel" to abort.`;
+          }
           break;
       }
 
-      // Update session
-      this.userSessions.set(sessionKey, session);
-
-    } catch (error) {
-      console.error('Error in handleIncomingMessage:', error);
-      await this.sendMessage(msg.chat.id, 'Sorry, there was an error processing your message. Please try again.');
-    }
-  }
-
-  // Add these helper methods
-  private async handleCustomerInquiry(chatId: number, text: string, session: any) {
-    // Extract inquiry information using AI
-    const extractionResult = await this.aiService.extractInformation(text, session.step);
-
-    if (extractionResult.extracted) {
-      // Update session with extracted data
-      Object.assign(session, extractionResult.data);
-      session.step = extractionResult.suggestedStep;
-    }
-
-    // Continue with your existing inquiry logic
-    await this.processInquiry(chatId, session);
-  }
-
-  private async handleVendorRegistration(chatId: number, text: string, session: any) {
-    // Extract vendor information
-    const extractionResult = await this.aiService.extractInformation(text, session.step);
-
-    if (extractionResult.extracted) {
-      Object.assign(session, extractionResult.data);
-      session.step = 'vendor_confirm';
-    }
-
-    // Process vendor registration
-    if (session.step === 'vendor_confirm' && session.vendorName) {
-      await this.processVendorRegistration(chatId, session);
-      await this.sendMessage(chatId, `✅ Vendor registration completed!
-    
-Welcome ${session.vendorName}! You can now:
-• Receive inquiry notifications
-• Submit quotes using our format
-• Record sales for tracking
-
-Type your rates to set up standard quotes.`);
-    } else {
-      await this.sendMessage(chatId, `To register as a vendor, please provide:
-• Your business name
-• Materials you supply (cement/TMT)
-• Service areas/cities
-• Contact details
-
-What's your business name?`);
-    }
-  }
-
-  private async handleGeneralMessage(chatId: number, text: string, session: any) {
-    if (text === '/start') {
-      await this.sendMessage(chatId, `🏗️ Welcome to CemTemBot! 
-
-I help you get quotes for construction materials like cement and TMT bars.
-
-What can I help you with today?
-• Get quotes for cement
-• Get quotes for TMT bars  
-• Check material rates
-• Connect with verified vendors
-
-Just tell me what materials you need!`);
-    } else {
-      await this.sendMessage(chatId, `Hello! I'm CemTemBot. I can help you with:
-
-🔹 Get quotes for cement and TMT bars
-🔹 Connect with verified vendors
-🔹 Check current market rates
-🔹 Register as a supplier
-
-What would you like to do?`);
+      this.userSessions.set(chatId.toString(), userSession);
+      await this.sendMessage(chatId, response);
     }
   }
   // 🆕 NEW: Handle API messages separately
@@ -1439,20 +1520,39 @@ Inquiry ID: ${inquiryId}`, {
     }
   }
 
-  async sendMessage(chatId: number, message: string) {
-    try {
+ // Replace your existing sendMessage method with this enhanced version:
+async sendMessage(chatId: string | number, message: string) {
+  try {
+    // Check if it's a web client (starts with 'web_')
+    if (String(chatId).startsWith('web_')) {
+      const socketId = String(chatId).replace('web_', '');
+      
+      if (this.io && this.webClients.has(socketId)) {
+        this.io.to(socketId).emit('bot_message', {
+          text: message,
+          timestamp: new Date()
+        });
+        console.log('📤 Web message sent to:', socketId);
+        return { message_id: Date.now() }; // Mock return for compatibility
+      } else {
+        console.log('❌ Web client not found:', socketId);
+        return null;
+      }
+    } else {
+      // Your EXISTING Telegram logic - UNCHANGED!
       if (!this.bot) {
         throw new Error("Bot not initialized");
       }
       // Always send real messages in Telegram (it's free!)
-      const result = await this.bot.sendMessage(chatId, message);
+      const result = await this.bot.sendMessage(Number(chatId), message);
       console.log(`📨 Telegram message sent to ${chatId}`);
       return result;
-    } catch (error) {
-      console.error('Failed to send Telegram message:', error);
-      throw error;
     }
+  } catch (error) {
+    console.error('Failed to send message:', error);
+    throw error;
   }
+}
 
   getStatus() {
     return {
