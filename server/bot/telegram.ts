@@ -1,7 +1,18 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { storage } from "../storage";
 import { AIService } from './aiService';
+import { Server as SocketIOServer } from 'socket.io';
 
+const bot = new TelegramBot(process.env.BOT_TOKEN!, { polling: true });
+
+declare global {
+  var io: SocketIOServer | undefined;
+}
+
+// Track sockets by session ID
+export const initTelegram = (ioInstance: any) => {
+  io = ioInstance;
+};
 
 export interface TelegramBotConfig {
   token: string;
@@ -1493,3 +1504,58 @@ Inquiry ID: ${inquiryId}`, {
 export const telegramBot = new TelegramBotService({
   token: "" // Will be loaded when start() is called
 });
+
+//---------------SOCKET IO -----------------------------
+// bot.on('message', async (msg) => {
+//   const message = msg.text || '';
+//   const sessionId = message?.split("::")[0]; // assume session ID is embedded
+
+//   console.log("📨 Telegram says:", message);
+
+//   if (sessionId && io) {
+//     io.to(sessionId).emit("bot-message", {
+//       sessionId,
+//       message,
+//     });
+//   }
+// });
+
+// Used by routes to send message to Telegram
+export const sendMessageToTelegram = (chatId: number, message: string) => {
+  return bot.sendMessage(chatId, message);
+};
+
+function emitToWebSocket(sessionId: string, message: string, senderType: 'vendor' | 'bot' = 'vendor') {
+  const room = `session-${sessionId}`;
+  if (global.io) {
+    global.io.to(room).emit('new-message', {
+      sessionId,
+      senderType,
+      message,
+      timestamp: new Date()
+    });
+  } else {
+    console.warn("⚠️ global.io not initialized");
+  }
+}
+
+bot.on('message', (msg) => {
+  try {
+    const messageText = msg.text;
+    if (!messageText) return;
+
+    const match = messageText.match(/Session:\s*([a-f0-9-]+)/i);
+    const sessionId = match?.[1];
+
+    if (sessionId) {
+      console.log(`📨 Telegram reply received for session: ${sessionId}`);
+      emitToWebSocket(sessionId, messageText, 'vendor');
+    } else {
+      console.log("⚠️ No session ID found in vendor message. Skipping WebSocket emit.");
+    }
+  } catch (error) {
+    console.error("❌ Error emitting vendor message to WebSocket:", error);
+  }
+});
+
+export default bot;

@@ -10,6 +10,13 @@ import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { sql } from "drizzle-orm";
+import { Server as SocketIOServer } from 'socket.io';
+import { initTelegram, sendMessageToTelegram } from './bot/telegram';
+
+declare global {
+  var io: SocketIOServer | undefined;
+}
+export { };
 
 // API key validation middleware
 const validateApiKey = async (req: any, res: any, next: any) => {
@@ -37,6 +44,60 @@ const validateApiKey = async (req: any, res: any, next: any) => {
 };
 
 export async function registerRoutes(app: Express): Promise<Server> {
+
+  const httpServer = createServer(app);
+
+  // Initialize Socket.IO
+  const socketIO = new SocketIOServer(httpServer, {
+    cors: {
+      origin: ["*", "https://mycoco.site", "http://localhost:3000"],
+      methods: ["GET", "POST"]
+    }
+  });
+
+  // Make io globally available
+  global.io = socketIO;
+
+  // Socket.IO connection handling for web users
+  socketIO.on('connection', (socket) => {
+    console.log('🌐 New web user connected:', socket.id);
+    socket.on('join-session', (sessionId) => {
+      console.log(`🔗 User ${socket.id} joined session: ${sessionId}`);
+      socket.join(`session-${sessionId}`);
+    });
+    socket.on('send-message', async (data) => {
+      const { sessionId, message } = data;
+      console.log(`💬 Web message from ${sessionId}: ${message}`);
+
+      try {
+        // FIXED: Process directly through bot instead of sending to Telegram chat
+        // Create a mock telegram message object for the bot to process
+        const mockTelegramMessage = {
+          text: `[API] Session: ${sessionId} | User: ${socket.id}\n${message}`,
+          chat: { id: 6924933952 } // This triggers the web user message handler
+        };
+
+        // Process through the bot's handleWebUserMessage method directly
+        await telegramBot.handleWebUserMessage(mockTelegramMessage);
+
+        // Emit user message to session room (for display)
+        socketIO.to(`session-${sessionId}`).emit('new-message', {
+          sessionId,
+          senderType: 'user',
+          message,
+          timestamp: new Date()
+        });
+
+      } catch (error) {
+        console.error('Error processing web message:', error);
+        socket.emit('error', { message: 'Failed to process message' });
+      }
+    });
+
+    socket.on('disconnect', () => {
+      console.log('🔌 Web user disconnected:', socket.id);
+    });
+  });
 
   // Start both bots
   await whatsappBot.start();
@@ -1082,33 +1143,66 @@ Inquiry ID: ${inquiryId || 'undefined'}`;
       res.status(500).json({ error: "Failed to send rate requests" });
     }
   });
-  const httpServer = createServer(app);
+  // const httpServer = createServer(app);
 
-  // Add Socket.IO support
-  const io = new SocketIOServer(httpServer, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"]
-    }
-  });
+  // // Add Socket.IO support
+  // const io = new SocketIOServer(httpServer, {
+  //   cors: {
+  //     origin: ['http://localhost:3000','https://mycoco.site'],
+  //     methods: ["GET", "POST"]
+  //   }
+  // });
 
-  // WebSocket connection handling
-  io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
+  // // WebSocket connection handling
+  // io.on('connection', (socket) => {
+  //   console.log('Client connected:', socket.id);
 
-    // Join chat session room
-    socket.on('join-session', (sessionId) => {
-      socket.join(`session-${sessionId}`);
-      console.log(`Client ${socket.id} joined session: ${sessionId}`);
-    });
+  //   // Join chat session room
+  //   socket.on('join-session', (sessionId) => {
+  //     socket.join(`session-${sessionId}`);
+  //     console.log(`Client ${socket.id} joined session: ${sessionId}`);
+  //   });
 
-    socket.on('disconnect', () => {
-      console.log('Client disconnected:', socket.id);
-    });
-  });
+  //   socket.on('disconnect', () => {
+  //     console.log('Client disconnected:', socket.id);
+  //   });
+  // });
 
   // Make io available globally for routes
   global.io = io;
 
   return httpServer;
 }
+
+export const initSocket = (server: any) => {
+  const io = new SocketIOServer(server, {
+    cors: {
+      origin: ['http://localhost:3000','https://mycoco.site'],
+      methods: ['GET', 'POST']
+    }
+  });
+
+  initTelegram(io); // give Telegram access to sockets
+
+  io.on("connection", (socket) => {
+    console.log("🔌 Socket connected:", socket.id);
+
+    socket.on("join-session", (sessionId: string) => {
+      console.log("🪪 Session joined:", sessionId);
+      socket.join(sessionId);
+    });
+
+    socket.on("send-message", async ({ sessionId, message }) => {
+      console.log(`📤 Web to Telegram (${sessionId}):`, message);
+      socket.emit("bot-typing");
+
+      // Replace with your actual chatId or lookup logic
+      const TELEGRAM_CHAT_ID = Number(process.env.TELEGRAM_USER_ID!);
+      await sendMessageToTelegram(TELEGRAM_CHAT_ID, `${sessionId}::${message}`);
+    });
+
+    socket.on("disconnect", () => {
+      console.log("❌ Socket disconnected:", socket.id);
+    });
+  });
+};

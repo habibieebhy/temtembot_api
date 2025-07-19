@@ -10,8 +10,25 @@ console.log("Token preview:", process.env.TELEGRAM_BOT_TOKEN?.substring(0, 10) +
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import cors from 'cors';
+import { initSocket } from './routes';
 
 const app = express();
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:8000',
+    'https://mycoco.site',
+    'https://telegram-chat-api.onrender.com',
+    'https://tele-bot-test.onrender.com',
+    'https://temtembot-api-ai.onrender.com', 
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -55,6 +72,10 @@ app.use((req, res, next) => {
     res.status(status).json({ message });
     throw err;
   });
+
+  //SOCKET-IO setup-------------------
+  initSocket(server);
+  //----------------------
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
