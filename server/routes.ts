@@ -93,14 +93,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Handle web messages (from your frontend test page)
-    socket.on('web_message', async (data) => {
-      console.log('📨 Web message received:', data.text);
+    socket.on('send-message', async (data) => {
+      console.log('📨 Web message received:', data);
       console.log('🔍 Socket ID:', socket.id);
+
+      const { sessionId, message } = data;
+      if (!message || !sessionId) {
+        socket.emit('bot_message', {
+          text: 'Error: Missing message or sessionId',
+          timestamp: new Date(),
+        });
+        return;
+      }
 
       const mockTelegramMessage = {
         chat: { id: `web_${socket.id}` },
         from: { id: `web_${socket.id}`, first_name: 'Web User' },
-        text: data.text
+        text: message,
       };
 
       try {
