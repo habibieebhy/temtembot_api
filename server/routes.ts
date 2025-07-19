@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { sql } from "drizzle-orm";
+import { LocationManager } from './locationManager';
 
 // API key validation middleware
 const validateApiKey = async (req: any, res: any, next: any) => {
@@ -1267,7 +1268,18 @@ Inquiry ID: ${inquiryId || 'undefined'}`;
       res.status(500).json({ error: "Failed to send rate requests" });
     }
   });
-  
+
+  //location Manager api
+  app.get("/api/locations", (req, res) => {
+    try {
+      const locationData = LocationManager.getLocationData();
+      res.json(locationData);
+    } catch (error) {
+      console.error('Error fetching locations:', error);
+      res.status(500).json({ error: "Failed to fetch locations" });
+    }
+  });
+
   //const httpServer = createServer(app);
 
   // Add Socket.IO support
