@@ -11,9 +11,10 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import cors from 'cors';
-import { initSocket } from './routes';
 
 const app = express();
+
+// Enhanced CORS setup for Socket.IO
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -21,13 +22,29 @@ app.use(cors({
     'https://mycoco.site',
     'https://telegram-chat-api.onrender.com',
     'https://tele-bot-test.onrender.com',
-    'https://temtembot-api-ai.onrender.com', 
-  ],
+    'https://temtembot-api-ai.onrender.com',
+    // Add development fallbacks
+    process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '',
+    process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000' : '',
+  ].filter(Boolean), // Remove empty strings
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+    // Socket.IO specific headers
+    'x-socket-id',
+    'x-session-id'
+  ],
+  // Enable preflight for all routes
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
-
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -63,6 +80,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Register routes which now includes Socket.IO server setup
   const server = await registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -72,10 +90,6 @@ app.use((req, res, next) => {
     res.status(status).json({ message });
     throw err;
   });
-
-  //SOCKET-IO setup-------------------
-  initSocket(server);
-  //----------------------
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
@@ -92,5 +106,7 @@ app.use((req, res, next) => {
   const port = process.env.PORT || 8000;
   server.listen(port, () => {
     log(`serving on port ${port}`);
+    console.log(`🚀 Server running on port ${port}`);
+    console.log(`🔌 Socket.IO server ready for connections`);
   });
 })();
