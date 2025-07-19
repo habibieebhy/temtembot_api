@@ -78,111 +78,43 @@ export class TelegramBotService {
     }
   }
   // Add this helper method to process user messages (web or Telegram)
+  // REPLACE the entire processUserMessage method with this:
   private async processUserMessage(msg: any): Promise<string | null> {
-    const chatId = msg.chat.id;
-    const text = msg.text;
     const isWebUser = msg.isWebUser || false;
-    console.log(`📝 Processing message from ${isWebUser ? 'web user' : 'Telegram user'}:`, text);
-    // Handle /start command
-    if (text === '/start') {
-      const welcomeMessage = `🏗️ Welcome to CemTemBot! 
-I help you get quotes for construction materials like cement and TMT bars.
-What can I help you with today?
-• Get quotes for cement
-• Get quotes for TMT bars  
-• Check material rates
-• Connect with verified vendors
-Just tell me what materials you need!`;
-      if (isWebUser) {
-        return welcomeMessage;
-      } else {
-        await this.sendMessage(chatId, welcomeMessage);
-        return null;
-      }
-    }
-    // Handle material inquiries
-    if (text.toLowerCase().includes('cement') || text.toLowerCase().includes('tmt') || text.toLowerCase().includes('quote')) {
-      return await this.handleMaterialInquiry(msg, isWebUser);
-    }
-    // Handle location responses
-    if (text.includes(':')) {
-      return await this.handleLocationSelection(msg, isWebUser);
-    }
-    // Use existing AI service to classify message and respond appropriately
-    try {
-      const classification = await this.aiService.classifyMessageType(text);
 
-      let response = "";
-      switch (classification.messageType) {
-        case 'customer_inquiry':
-          response = `I can help you get quotes for construction materials! 
-Which materials do you need?
-• Cement
-• TMT bars
-• Both
-Please let me know your requirements.`;
-          break;
-        case 'vendor_registration':
-          response = `Great! I see you're a supplier. 
-To register as a vendor, please provide:
-• Your business name
-• Materials you supply (cement/TMT)
-• Service areas/cities
-• Contact details
-What materials do you supply?`;
-          break;
-        case 'vendor_rate_update':
-          response = `I can help you update your rates. 
-Please provide your current rates in this format:
-• Cement: ₹350 per bag
-• TMT: ₹48 per kg
-• GST: 18%
-• Delivery: ₹50
-What are your current rates?`;
-          break;
-        case 'sale_entry':
-          response = `I can help you record this sale. 
-Please provide:
-• Material sold (cement/TMT)
-• Quantity
-• Company/customer name
-• Price per unit
-• Location
-Can you provide these details?`;
-          break;
-        default: // general_chat
-          response = `Hello! I'm CemTemBot, here to help with construction material quotes and vendor services.
-How can I assist you today?
-• Get material quotes
-• Register as a vendor
-• Update your rates
-• Record a sale
-What would you like to do?`;
-          break;
-      }
+    if (isWebUser) {
+      // For web users, we need to capture the response
+      // Store the original sendMessage method
+      const originalSendMessage = this.sendMessage.bind(this);
+      let capturedResponse = "";
 
-      if (isWebUser) {
-        return response;
-      } else {
-        await this.sendMessage(chatId, response);
-        return null;
-      }
-    } catch (error) {
-      console.error('AI service error:', error);
-      const fallbackResponse = `I'm here to help with construction materials! 
-You can:
-• Request quotes for cement or TMT bars
-• Register as a vendor
-• Update material rates
-• Get market information
-How can I help you today?`;
+      // Temporarily override sendMessage to capture responses
+      this.sendMessage = async (chatId: number, message: string) => {
+        capturedResponse = message;
+        console.log(`📤 Captured response for web user: ${message}`);
+        return Promise.resolve(null as any);
+      };
 
-      if (isWebUser) {
-        return fallbackResponse;
-      } else {
-        await this.sendMessage(chatId, fallbackResponse);
-        return null;
+      try {
+        // Use your existing handleIncomingMessage logic
+        await this.handleIncomingMessage(msg);
+
+        // Restore original sendMessage
+        this.sendMessage = originalSendMessage;
+
+        // Return the captured response
+        return capturedResponse || "I received your message. How can I help you with construction materials?";
+
+      } catch (error) {
+        // Restore original sendMessage
+        this.sendMessage = originalSendMessage;
+        console.error('Error in processUserMessage:', error);
+        return "Sorry, there was an error processing your message. Please try again.";
       }
+    } else {
+      // For Telegram users, use existing logic normally
+      await this.handleIncomingMessage(msg);
+      return null;
     }
   }
   // Alternative: Add a simple chat completion method to your telegram service
@@ -958,14 +890,168 @@ More quotes may follow from other vendors!`;
     }
   }
 
+  // Add this method to handle the original message processing
   async handleIncomingMessage(msg: any) {
     try {
-      // Use the new unified message processing
-      await this.processUserMessage(msg);
+      const chatId = msg.chat.id;
+      const text = msg.text;
+      const isWebUser = msg.isWebUser || false;
+
+      console.log(`📥 Processing ${isWebUser ? 'web' : 'telegram'} message:`, text);
+
+      // Check if it's a vendor rate response first
+      const isRateResponse = await this.handleVendorRateResponse(msg);
+      if (isRateResponse) {
+        return; // Rate response handled, exit early
+      }
+
+      // Get or create user session
+      const sessionKey = chatId.toString();
+      let session = this.userSessions.get(sessionKey) || {};
+
+      // Initialize session if new
+      if (!session.step) {
+        session = {
+          step: 'initial',
+          chatId,
+          startTime: new Date(),
+          messageCount: 0
+        };
+      }
+
+      session.messageCount = (session.messageCount || 0) + 1;
+      session.lastMessage = text;
+      session.lastActivity = new Date();
+
+      // Check if user is a registered vendor
+      const isVendor = await this.isRegisteredVendor(chatId);
+
+      // Handle vendor-specific messages
+      if (isVendor) {
+        // Check for natural language quote updates
+        if (await this.handleNaturalQuoteUpdate(chatId, text)) {
+          return;
+        }
+
+        // Check for sale entry
+        if (text.toLowerCase().includes('sold') || text.toLowerCase().includes('delivered') || text.toLowerCase().includes('supplied')) {
+          await this.handleSaleEntry(chatId, text, session);
+          return;
+        }
+      }
+
+      // Use AI to classify message type
+      const classification = await this.aiService.classifyMessageType(text);
+      console.log('🤖 Message classification:', classification);
+
+      // Handle based on classification
+      switch (classification.messageType) {
+        case 'customer_inquiry':
+          await this.handleCustomerInquiry(chatId, text, session);
+          break;
+
+        case 'vendor_registration':
+          await this.handleVendorRegistration(chatId, text, session);
+          break;
+
+        case 'vendor_rate_update':
+          if (isVendor) {
+            await this.handleNaturalQuoteUpdate(chatId, text);
+          } else {
+            await this.sendMessage(chatId, "Please register as a vendor first using /vendor command.");
+          }
+          break;
+
+        case 'sale_entry':
+          if (isVendor) {
+            await this.handleSaleEntry(chatId, text, session);
+          } else {
+            await this.sendMessage(chatId, "Please register as a vendor first to record sales.");
+          }
+          break;
+
+        default:
+          await this.handleGeneralMessage(chatId, text, session);
+          break;
+      }
+
+      // Update session
+      this.userSessions.set(sessionKey, session);
 
     } catch (error) {
-      console.error('Error handling incoming message:', error);
-      await this.sendMessage(msg.chat.id, 'Sorry, I encountered an error. Please try again.');
+      console.error('Error in handleIncomingMessage:', error);
+      await this.sendMessage(msg.chat.id, 'Sorry, there was an error processing your message. Please try again.');
+    }
+  }
+
+  // Add these helper methods
+  private async handleCustomerInquiry(chatId: number, text: string, session: any) {
+    // Extract inquiry information using AI
+    const extractionResult = await this.aiService.extractInformation(text, session.step);
+
+    if (extractionResult.extracted) {
+      // Update session with extracted data
+      Object.assign(session, extractionResult.data);
+      session.step = extractionResult.suggestedStep;
+    }
+
+    // Continue with your existing inquiry logic
+    await this.processInquiry(chatId, session);
+  }
+
+  private async handleVendorRegistration(chatId: number, text: string, session: any) {
+    // Extract vendor information
+    const extractionResult = await this.aiService.extractInformation(text, session.step);
+
+    if (extractionResult.extracted) {
+      Object.assign(session, extractionResult.data);
+      session.step = 'vendor_confirm';
+    }
+
+    // Process vendor registration
+    if (session.step === 'vendor_confirm' && session.vendorName) {
+      await this.processVendorRegistration(chatId, session);
+      await this.sendMessage(chatId, `✅ Vendor registration completed!
+    
+Welcome ${session.vendorName}! You can now:
+• Receive inquiry notifications
+• Submit quotes using our format
+• Record sales for tracking
+
+Type your rates to set up standard quotes.`);
+    } else {
+      await this.sendMessage(chatId, `To register as a vendor, please provide:
+• Your business name
+• Materials you supply (cement/TMT)
+• Service areas/cities
+• Contact details
+
+What's your business name?`);
+    }
+  }
+
+  private async handleGeneralMessage(chatId: number, text: string, session: any) {
+    if (text === '/start') {
+      await this.sendMessage(chatId, `🏗️ Welcome to CemTemBot! 
+
+I help you get quotes for construction materials like cement and TMT bars.
+
+What can I help you with today?
+• Get quotes for cement
+• Get quotes for TMT bars  
+• Check material rates
+• Connect with verified vendors
+
+Just tell me what materials you need!`);
+    } else {
+      await this.sendMessage(chatId, `Hello! I'm CemTemBot. I can help you with:
+
+🔹 Get quotes for cement and TMT bars
+🔹 Connect with verified vendors
+🔹 Check current market rates
+🔹 Register as a supplier
+
+What would you like to do?`);
     }
   }
   // 🆕 NEW: Handle API messages separately
