@@ -10,7 +10,6 @@ import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { sql } from "drizzle-orm";
-import { LocationManager } from './locationManager';
 
 // API key validation middleware
 const validateApiKey = async (req: any, res: any, next: any) => {
@@ -37,103 +36,276 @@ const validateApiKey = async (req: any, res: any, next: any) => {
   }
 };
 
-export async function registerRoutes(app: Express): Promise<Server> {
+export async function registerRoutes(app: Express): Promise<void> {
 
   // Start both bots
   await whatsappBot.start();
   await telegramBot.start();
 
   // 🌐 ADD Socket.IO setup (new code)
-  const server = createServer(app);
-  const io = new SocketIOServer(server, {
-    cors: {
-      origin: [
-    'http://localhost:3000',
-    'http://localhost:8000',
-    'https://mycoco.site',
-    'https://telegram-chat-api.onrender.com',
-    'https://tele-bot-test.onrender.com',
-    'https://temtembot-api-ai.onrender.com',
-    // Add development fallbacks
-    process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '',
-    process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000' : '',
-  ].filter(Boolean),
-      methods: ["GET", "POST"]
-    }
-  });
 
-  global.io = io;
 
   // Connect Socket.IO to telegram bot
-  telegramBot.setSocketIO(io);
 
-  console.log('✅ Socket.IO server initialized and listening');
-  console.log('🔍 CORS settings:', {
-    origin: [
-    'http://localhost:3000',
-    'http://localhost:8000',
-    'https://mycoco.site',
-    'https://telegram-chat-api.onrender.com',
-    'https://tele-bot-test.onrender.com',
-    'https://temtembot-api-ai.onrender.com',
-    // Add development fallbacks
-    process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '',
-    process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000' : '',
-  ].filter(Boolean),
-    methods: ["GET", "POST"]
-  });
+  app.get('/socket-test', (req, res) => {
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO Chat Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .chat-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            width: 90%;
+            max-width: 500px;
+            height: 600px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            background: #4a90e2;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-weight: 600;
+        }
+        .status {
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .status.connected { background: #d4edda; color: #155724; }
+        .status.disconnected { background: #f8d7da; color: #721c24; }
+        .messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f8f9fa;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 16px;
+            border-radius: 18px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .message.sent {
+            background: #4a90e2;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+        .message.received {
+            background: white;
+            color: #333;
+            border: 1px solid #e1e5e9;
+        }
+        .message-time {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #e1e5e9;
+            background: white;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        #messageInput {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 25px;
+            outline: none;
+            font-size: 14px;
+        }
+        #messageInput:focus {
+            border-color: #4a90e2;
+        }
+        #sendButton {
+            padding: 12px 20px;
+            background: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.3s;
+        }
+        #sendButton:hover {
+            background: #357abd;
+        }
+        #sendButton:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .typing-indicator {
+            padding: 10px 20px;
+            font-style: italic;
+            color: #666;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h2>🤖 Bot Chat Test</h2>
+        </div>
+        
+        <div id="status" class="status disconnected">
+            🔴 Connecting...
+        </div>
+        
+        <div id="messages" class="messages">
+            <div class="message received">
+                <div>Welcome! Send a message to test the bot.</div>
+                <div class="message-time">System</div>
+            </div>
+        </div>
+        
+        <div id="typingIndicator" class="typing-indicator" style="display: none;">
+            Bot is typing...
+        </div>
+        
+        <div class="input-area">
+            <div class="input-group">
+                <input 
+                    type="text" 
+                    id="messageInput" 
+                    placeholder="Type your message here..." 
+                    disabled
+                />
+                <button id="sendButton" disabled>Send</button>
+            </div>
+        </div>
+    </div>
 
-  // Basic Socket.IO connection handler
-  io.on('connection', (socket) => {
-    console.log('🌐 Client connected successfully:', socket.id);
-    console.log('🔍 Connection details:', {
-      id: socket.id,
-      handshake: socket.handshake.address,
-      transport: socket.conn.transport.name
-    });
-
-    // Handle web messages (from your frontend test page)
-    socket.on('send-message', async (data) => {
-      console.log('📨 Web message received:', data);
-      console.log('🔍 Socket ID:', socket.id);
-
-      const { sessionId, message } = data;
-      if (!message || !sessionId) {
-        socket.emit('bot_message', {
-          text: 'Error: Missing message or sessionId',
-          timestamp: new Date(),
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const socket = io('/', { 
+          transports: ['polling', 'websocket'],
+          forceNew: true 
         });
-        return;
-      }
+        
+        const status = document.getElementById('status');
+        const messages = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const typingIndicator = document.getElementById('typingIndicator');
 
-      const mockTelegramMessage = {
-        chat: { id: `web_${socket.id}` },
-        from: { id: `web_${socket.id}`, first_name: 'Web User' },
-        text: message,
-      };
+        let isTyping = false;
 
-      try {
-        await telegramBot.handleIncomingMessage(mockTelegramMessage);
-        console.log('✅ handleIncomingMessage call completed');
-      } catch (error) {
-        console.error('❌ Error in handleIncomingMessage:', error);
-      }
-    });
+        // Connection status
+        socket.on('connect', () => {
+            console.log('✅ Connected to server');
+            status.textContent = '🟢 Connected';
+            status.className = 'status connected';
+            messageInput.disabled = false;
+            sendButton.disabled = false;
+            messageInput.focus();
+        });
 
-    // Handle join-session (from other clients)
-    socket.on('join-session', (sessionId) => {
-      socket.join(`session-${sessionId}`);
-      console.log(`Client ${socket.id} joined session: ${sessionId}`);
-    });
+        socket.on('disconnect', () => {
+            console.log('❌ Disconnected from server');
+            status.textContent = '🔴 Disconnected';
+            status.className = 'status disconnected';
+            messageInput.disabled = true;
+            sendButton.disabled = true;
+        });
 
-    // Handle disconnection
-    socket.on('disconnect', () => {
-      console.log('❌ Client disconnected:', socket.id);
-    });
+        // Message handling
+        function addMessage(text, type = 'received', sender = 'Bot') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = \`message \${type}\`;
+            
+            const now = new Date();
+            const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            messageDiv.innerHTML = \`
+                <div>\${text}</div>
+                <div class="message-time">\${sender} • \${time}</div>
+            \`;
+            
+            messages.appendChild(messageDiv);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+            
+            // Add sent message to UI
+            addMessage(message, 'sent', 'You');
+            
+            // Show typing indicator
+            showTyping();
+            
+            // Send to server
+            socket.emit('web_message', { text: message });
+            
+            messageInput.value = '';
+        }
+
+        function showTyping() {
+            if (!isTyping) {
+                isTyping = true;
+                typingIndicator.style.display = 'block';
+                
+                // Hide after 3 seconds
+                setTimeout(() => {
+                    hideTyping();
+                }, 3000);
+            }
+        }
+
+        function hideTyping() {
+            isTyping = false;
+            typingIndicator.style.display = 'none';
+        }
+
+        // Listen for bot responses
+        socket.on('bot_response', (data) => {
+            hideTyping();
+            addMessage(data.text || 'Bot received your message!');
+        });
+
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Auto-focus input when page loads
+        window.addEventListener('load', () => {
+            if (!messageInput.disabled) {
+                messageInput.focus();
+            }
+        });
+    </script>
+</body>
+</html>`);
   });
-
-  console.log('✅ Socket.IO server initialized');
-
   // WhatsApp webhook endpoint for incoming messages
   app.post("/webhook/whatsapp", async (req, res) => {
     try {
@@ -1174,22 +1346,10 @@ Inquiry ID: ${inquiryId || 'undefined'}`;
       res.status(500).json({ error: "Failed to send rate requests" });
     }
   });
-
-  //location Manager api
-  app.get("/api/locations", (req, res) => {
-    try {
-      const locationData = LocationManager.getLocationData();
-      res.json(locationData);
-    } catch (error) {
-      console.error('Error fetching locations:', error);
-      res.status(500).json({ error: "Failed to fetch locations" });
-    }
-  });
-
   const httpServer = createServer(app);
 
   // WebSocket connection handling
-  telegramBot.setSocketIO(io);
+
   // Make io available globally for routes
 
   return httpServer;

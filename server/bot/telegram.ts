@@ -330,20 +330,15 @@ Inquiry ID: ${inquiryId}`);
         connected: true,
         joinedAt: new Date()
       });
-      // Handle web messages using your EXISTING handleIncomingMessage
+
+      // Handle web messages using our NEW handleWebMessage method
       socket.on('web_message', async (data) => {
-        console.log('🔵 Web message received:', socket.id, ':', data.text);
-
-        // Create mock Telegram message
-        const mockMsg = {
-          chat: { id: `web_${socket.id}` },
-          text: data.text,
-          from: { id: `web_${socket.id}`, username: 'web_user' }
-        };
-
-        // Use your EXISTING handleIncomingMessage - no changes!
-        await this.handleIncomingMessage(mockMsg);
+        console.log('📨 Web message received:', data.text);
+        console.log(`🔵 Web message received: ${socket.id} : ${data.text}`);
+        await this.handleWebMessage(socket.id, data.text);
+        console.log('✅ Web message processed');
       });
+
       socket.on('disconnect', () => {
         console.log('🌐 Web client disconnected:', socket.id);
         this.webClients.delete(socket.id);
@@ -351,7 +346,6 @@ Inquiry ID: ${inquiryId}`);
       });
     });
   }
-
   private getWebUserSession(socketId: string) {
     let session = this.webUserSessions.get(socketId);
     if (!session) {
@@ -673,7 +667,16 @@ Inquiry ID: ${inquiryId}`);
       await storage.incrementInquiryResponses(rateData.inquiryId);
 
       // Send compiled quote to buyer
-      await this.sendCompiledQuoteToBuyer(inquiry, rateData, vendor);
+      // Determine platform and send quote accordingly
+      const isWebUser = inquiry.userPhone && inquiry.userPhone.startsWith('web_');
+
+      if (isWebUser) {
+        // Send to web buyer
+        await this.sendCompiledQuoteToWebBuyer(inquiry, rateData, vendor);
+      } else {
+        // Send to telegram buyer (existing method)
+        await this.sendCompiledQuoteToBuyer(inquiry, rateData, vendor);
+      }
 
     } catch (error) {
       console.error('Error processing vendor rate:', error);
@@ -715,6 +718,46 @@ More quotes may follow from other vendors!`;
       }
     } catch (error) {
       console.error('Error sending quote to buyer:', error);
+    }
+  }
+
+  private async sendCompiledQuoteToWebBuyer(inquiry: any, rateData: any, vendor: any) {
+    const buyerMessage = `🏗️ **New Quote Received!**
+
+For your inquiry: ${inquiry.material.toUpperCase()}
+📍 City: ${inquiry.city}
+📦 Quantity: ${inquiry.quantity}
+
+💼 **Vendor: ${vendor.name}**
+💰 Rate: ₹${rateData.rate} per ${rateData.unit}
+📊 GST: ${rateData.gst}%
+🚚 Delivery: ₹${rateData.delivery}
+📞 Contact: ${vendor.phone}
+
+Inquiry ID: ${inquiry.inquiryId}
+
+More quotes may follow from other vendors!`;
+
+    try {
+      // Extract socketId from web chatId (web_socketId format)
+      const socketId = inquiry.userPhone.replace('web_', '');
+
+      if (this.io) {
+        this.io.to(socketId).emit('bot_response', { text: buyerMessage });
+        console.log(`✅ Quote sent to web client: ${socketId}`);
+
+        // Create notification for web delivery
+        try {
+          await storage.createNotification({
+            message: `📤 Quote forwarded to web buyer for inquiry #${inquiry.inquiryId}`,
+            type: 'quote_sent_to_web_buyer'
+          });
+        } catch (err) {
+          console.error('Failed to create web notification:', err);
+        }
+      }
+    } catch (error) {
+      console.error('Error sending quote to web buyer:', error);
     }
   }
 
@@ -784,8 +827,15 @@ Reply with 1 or 2`;
 
       this.userSessions.set(chatId.toString(), { step: 'user_type' });
       await this.sendMessage(chatId, response);
+      // EMIT TO WEB CLIENT
+      if (this.io && chatId.toString().startsWith('web_')) {
+        const socketId = chatId.toString().replace('web_', '');
+        this.io.to(socketId).emit('bot_response', { text: response });
+        console.log('🌐 /start response sent to web client:', socketId);
+      }
       return;
     }
+
 
     // Handle /help command
     if (text === '/help') {
@@ -842,6 +892,7 @@ Simply send /start to begin!`);
         await this.handleSaleEntry(chatId, text, userSession);
         return;
       }
+
 
       if (text && text !== '/start' && text !== '/help' && userSession.step !== 'vendor_confirm' && userSession.step !== 'confirm') {
         try {
@@ -1133,6 +1184,147 @@ Your sale has been recorded in the system. You can add another sale anytime by s
 
       this.userSessions.set(chatId.toString(), userSession);
       await this.sendMessage(chatId, response);
+      // EMIT RESPONSE TO WEB CLIENTS
+      if (response && this.io) {
+        // Check if this is a web user (chatId starts with "web_")
+        if (chatId.toString().startsWith('web_')) {
+          const socketId = chatId.toString().replace('web_', '');
+          this.io.to(socketId).emit('bot_response', { text: response });
+          console.log('🌐 Response sent to web client:', socketId);
+        }
+      }
+
+    }
+  }
+  async handleWebMessage(socketId: string, text: string) {
+    console.log(`🌐 Processing web message from ${socketId}: "${text}"`);
+
+    const webChatId = `web_${socketId}`;
+    let userSession = this.userSessions.get(webChatId) || { step: 'start' };
+    let response = '';
+
+    // Handle /start command
+    if (text === '/start') {
+      this.userSessions.delete(webChatId);
+      response = `🏗️ Welcome to CemTemBot! 
+
+I help you get instant pricing for cement and TMT bars from verified vendors in your city.
+
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
+
+Reply with 1 or 2`;
+      this.userSessions.set(webChatId, { step: 'user_type' });
+    }
+    else {
+      // 🤖 AI PROCESSING - SAME AS TELEGRAM
+      if (text && text !== '/help' && userSession.step !== 'vendor_confirm' && userSession.step !== 'confirm') {
+        try {
+          const aiResult = await this.aiService.extractInformation(text, userSession.step);
+          if (aiResult.extracted && aiResult.confidence > 0.7) {
+            console.log('🤖 Web AI extracted:', aiResult.data);
+            Object.assign(userSession, aiResult.data);
+            userSession.step = aiResult.suggestedStep;
+            console.log(`🚀 Web AI jumped to step: ${userSession.step}`);
+          }
+        } catch (error) {
+          console.log('🤖 Web AI extraction failed, continuing with manual flow');
+        }
+      }
+
+      // Copy EXACT conversation logic from Telegram
+      switch (userSession.step) {
+        case 'start':
+          if (text?.toLowerCase().includes('hello') || text?.toLowerCase().includes('hi')) {
+            response = `🏗️ Welcome to CemTemBot! 
+
+I help you get instant pricing for cement and TMT bars from verified vendors in your city.
+
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
+
+Reply with 1 or 2`;
+            userSession.step = 'user_type';
+          } else {
+            response = `👋 Hello! Send /start to get started with pricing inquiries.`;
+          }
+          break;
+
+        case 'user_type':
+          if (text === '1' || text?.toLowerCase().includes('buyer')) {
+            userSession.userType = 'buyer';
+            userSession.step = 'get_city';
+            response = `Great! I'll help you find prices in your city.
+
+📍 Which city are you in?
+
+Available cities: Guwahati, Mumbai, Delhi
+
+Please enter your city name:`;
+          } else if (text === '2' || text?.toLowerCase().includes('vendor')) {
+            userSession.userType = 'vendor';
+            userSession.step = 'vendor_name';
+            response = `👨‍💼 Great! Let's register you as a vendor.
+
+What's your business/company name?`;
+          } else {
+            response = `Please reply with:
+1 - if you're a Buyer
+2 - if you're a Vendor`;
+          }
+          break;
+
+        case 'confirm':
+          if (text?.toLowerCase().trim() === 'confirm') {
+            await this.processInquiry(webChatId, userSession);
+            response = `🚀 Your inquiry has been sent!
+
+We've contacted vendors in ${userSession.city} for ${userSession.material} pricing. You should receive quotes shortly via Telegram.
+
+📊 Inquiry ID: INQ-${Date.now()}
+
+Vendors will reply directly to you with quotes in this format:
+💰 Rate: ₹X per unit
+📊 GST: X%
+🚚 Delivery: ₹X
+
+Send /start for a new inquiry anytime!`;
+            this.userSessions.delete(`web_${socketId}`);
+          } else if (text?.toLowerCase().trim() === 'restart') {
+            userSession.step = 'user_type';
+            response = `🔄 Let's start over!
+
+Are you a:
+1️⃣ Buyer (looking for prices)
+2️⃣ Vendor (want to provide quotes)
+
+Reply with 1 or 2`;
+          } else {
+            const brandText = userSession.brand ? `Brand: ${userSession.brand}` : 'Brand: Any';
+            response = `✅ Please confirm your inquiry:
+
+📍 City: ${userSession.city}
+🏗️ Material: ${userSession.material?.toUpperCase()}
+${brandText}
+📦 Quantity: ${userSession.quantity}
+
+Reply "confirm" to send to vendors or "restart" to start over:`;
+          }
+          break;
+
+        default:
+          response = `👋 Hello! Send /start to begin a new pricing inquiry.`;
+          break;
+      }
+    }
+
+    this.userSessions.set(webChatId, userSession);
+
+    if (this.io) {
+      this.io.to(socketId).emit('bot_response', { text: response });
+      console.log('🌐 AI response sent to web client:', socketId);
     }
   }
   // 🆕 NEW: Handle API messages separately
@@ -1190,10 +1382,15 @@ Your sale has been recorded in the system. You can add another sale anytime by s
     this.autoQuoteTimers.set(inquiryId, timer);
 
     if (selectedVendors.length > 0) {
+      // Determine platform based on chatId
+      const isWebUser = chatId.toString().startsWith('web_');
+      const platform = isWebUser ? "web" : "telegram";
+      const userName = isWebUser ? "Web User" : "Telegram User";
+
       // Create inquiry record
       await storage.createInquiry({
         inquiryId,
-        userName: "Telegram User",
+        userName: userName,
         userPhone: chatId.toString(),
         city: session.city,
         material: session.material,
@@ -1202,7 +1399,7 @@ Your sale has been recorded in the system. You can add another sale anytime by s
         vendorsContacted: selectedVendors.map(v => v.vendorId),
         responseCount: 0,
         status: "pending",
-        platform: "telegram"
+        platform: platform
       });
 
       // Send messages to vendors
@@ -1520,39 +1717,39 @@ Inquiry ID: ${inquiryId}`, {
     }
   }
 
- // Replace your existing sendMessage method with this enhanced version:
-async sendMessage(chatId: string | number, message: string) {
-  try {
-    // Check if it's a web client (starts with 'web_')
-    if (String(chatId).startsWith('web_')) {
-      const socketId = String(chatId).replace('web_', '');
-      
-      if (this.io && this.webClients.has(socketId)) {
-        this.io.to(socketId).emit('bot_message', {
-          text: message,
-          timestamp: new Date()
-        });
-        console.log('📤 Web message sent to:', socketId);
-        return { message_id: Date.now() }; // Mock return for compatibility
+  // Replace your existing sendMessage method with this enhanced version:
+  async sendMessage(chatId: string | number, message: string) {
+    try {
+      // Check if it's a web client (starts with 'web_')
+      if (String(chatId).startsWith('web_')) {
+        const socketId = String(chatId).replace('web_', '');
+
+        if (this.io && this.webClients.has(socketId)) {
+          this.io.to(socketId).emit('bot_message', {
+            text: message,
+            timestamp: new Date()
+          });
+          console.log('📤 Web message sent to:', socketId);
+          return { message_id: Date.now() }; // Mock return for compatibility
+        } else {
+          console.log('❌ Web client not found:', socketId);
+          return null;
+        }
       } else {
-        console.log('❌ Web client not found:', socketId);
-        return null;
+        // Your EXISTING Telegram logic - UNCHANGED!
+        if (!this.bot) {
+          throw new Error("Bot not initialized");
+        }
+        // Always send real messages in Telegram (it's free!)
+        const result = await this.bot.sendMessage(Number(chatId), message);
+        console.log(`📨 Telegram message sent to ${chatId}`);
+        return result;
       }
-    } else {
-      // Your EXISTING Telegram logic - UNCHANGED!
-      if (!this.bot) {
-        throw new Error("Bot not initialized");
-      }
-      // Always send real messages in Telegram (it's free!)
-      const result = await this.bot.sendMessage(Number(chatId), message);
-      console.log(`📨 Telegram message sent to ${chatId}`);
-      return result;
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      throw error;
     }
-  } catch (error) {
-    console.error('Failed to send message:', error);
-    throw error;
   }
-}
 
   getStatus() {
     return {
