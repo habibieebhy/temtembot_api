@@ -100,31 +100,31 @@ app.use((req, res, next) => {
   console.log('✅ Socket.IO server created');
 
   // Socket.IO connection handler
-  io.on('connection', (socket) => {
-    console.log('🌐 Client connected:', socket.id);
+  // io.on('connection', (socket) => {
+  //   console.log('🌐 Client connected:', socket.id);
 
-    socket.on('web_message', async (data) => {
-      console.log('📨 Web message received:', data.text);
+  //   socket.on('web_message', async (data) => {
+  //     console.log('📨 Web message received:', data.text);
 
-      const mockTelegramMessage = {
-        chat: { id: `web_${socket.id}` },
-        from: { id: `web_${socket.id}`, first_name: 'Web User' },
-        text: data.text
-      };
+  //     const mockTelegramMessage = {
+  //       chat: { id: `web_${socket.id}` },
+  //       from: { id: `web_${socket.id}`, first_name: 'Web User' },
+  //       text: data.text
+  //     };
 
-      try {
-        await telegramBot.handleIncomingMessage(mockTelegramMessage);
-        console.log('✅ Message processed');
-      } catch (error) {
-        console.error('❌ Error:', error);
-      }
-    });
+  //     try {
+  //       await telegramBot.handleIncomingMessage(mockTelegramMessage);
+  //       console.log('✅ Message processed');
+  //     } catch (error) {
+  //       console.error('❌ Error:', error);
+  //     }
+  //   });
 
-    socket.on('disconnect', () => {
-      console.log('❌ Client disconnected:', socket.id);
-    });
-  });
-  telegramBot.setSocketIO(io);
+  //   socket.on('disconnect', () => {
+  //     console.log('❌ Client disconnected:', socket.id);
+  //   });
+  // });
+   telegramBot.setSocketIO(io);
 
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
