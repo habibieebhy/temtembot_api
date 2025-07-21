@@ -25,7 +25,7 @@ export class TelegramBotService {
   constructor(config: TelegramBotConfig) {
     this.token = config.token;
     // ADD THIS LINE HERE
-    this.aiService = new AIService(process.env.OPENROUTER_API_KEY || '');
+    this.aiService = new AIService(process.env.DEEPSEEK_API_KEY || '');
   }
   // ADD this method RIGHT HERE (after constructor)
   setSocketIO(io: SocketIOServer) {

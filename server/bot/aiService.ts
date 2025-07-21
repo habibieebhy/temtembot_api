@@ -39,7 +39,7 @@ interface SaleExtractionResult {
 
 export class AIService {
   private apiKey: string;
-  private baseUrl = 'https://openrouter.ai/api/v1';
+  private baseUrl = 'https://api.deepseek.com/v1';
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -92,7 +92,7 @@ Examples:
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'deepseek/deepseek-chat',
+          model: 'deepseek-chat',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.1,
           max_tokens: 200
