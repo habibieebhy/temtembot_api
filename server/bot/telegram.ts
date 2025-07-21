@@ -868,7 +868,7 @@ Simply send /start to begin!`);
 
     // ADD THIS NEW SECTION:
     // Check for natural language quote updates from vendors
-    if (text && (userSession.userType === 'vendor' || await this.isRegisteredVendor(chatId))) {
+    if (text) {
       const messageClassification = await this.aiService.classifyMessageType(text);
       console.log(`🤖 Message classified as: ${messageClassification.messageType} (confidence: ${messageClassification.confidence})`);
       if (messageClassification.messageType === 'vendor_rate_update' && messageClassification.confidence > 0.8) {
@@ -901,6 +901,9 @@ Simply send /start to begin!`);
             console.log('🤖 AI extracted:', aiResult.data);
             Object.assign(userSession, aiResult.data);
             userSession.step = aiResult.suggestedStep;
+            if (aiResult.data.userType === 'vendor') {
+              userSession.userType = 'vendor';
+            }
             console.log(`🚀 AI jumped to step: ${userSession.step}`);
             console.log(`🔍 DEBUG: After AI - userSession:`, userSession);
           }
