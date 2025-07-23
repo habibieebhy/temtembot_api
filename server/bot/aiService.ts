@@ -39,10 +39,66 @@ interface SaleExtractionResult {
 
 export class AIService {
   private apiKey: string;
-  private baseUrl = 'https://api.deepseek.com/v1';
+  private hfApiKey: string;
+  private baseUrl = 'https://openrouter.ai/api/v1'; // Keep for fallback
+  private hfBaseUrl = 'https://api-inference.huggingface.co/models';
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
+    this.hfApiKey = process.env.HUGGINGFACE_API_KEY || '';
+  }
+
+  // Helper method for Hugging Face text generation
+  private async callHuggingFaceGeneration(prompt: string, maxTokens: number = 200): Promise<string> {
+    try {
+      const response = await fetch(`${this.hfBaseUrl}/microsoft/DialoGPT-medium`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.hfApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          inputs: prompt,
+          parameters: {
+            max_length: maxTokens,
+            temperature: 0.1,
+            return_full_text: false
+          }
+        })
+      });
+
+      const result = await response.json();
+      
+      if (result && result.length > 0 && result[0].generated_text) {
+        return result[0].generated_text;
+      } else {
+        throw new Error('Invalid HF response format');
+      }
+    } catch (error) {
+      console.error('HF Generation failed:', error);
+      // Fallback to OpenRouter
+      return await this.callOpenRouterFallback(prompt, maxTokens);
+    }
+  }
+
+  // Fallback to OpenRouter when Hugging Face fails
+  private async callOpenRouterFallback(prompt: string, maxTokens: number): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'deepseek/deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: maxTokens
+      })
+    });
+
+    const result = await response.json();
+    return result.choices[0].message.content;
   }
 
   async extractStandardQuotes(message: string): Promise<{
@@ -85,23 +141,7 @@ Examples:
 "Update my rates" → action: "update"
 "TMT 52, delivery free" → tmt_rate: 52, delivery: 0`;
 
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.1,
-          max_tokens: 200
-        })
-      });
-
-      const result = await response.json();
-      const aiResponse = result.choices[0].message.content;
-
+      const aiResponse = await this.callHuggingFaceGeneration(prompt, 200);
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
       const parsed = JSON.parse(jsonMatch[0]);
 
@@ -131,6 +171,9 @@ Examples:
 
   async extractInformation(message: string, currentStep: string): Promise<AIExtractionResult> {
     try {
+      // Use classification first for better accuracy
+      const classification = await this.classifyMessageType(message);
+      
       const prompt = `Extract info from: "${message}"
 
 IMPORTANT RULES:
@@ -155,25 +198,20 @@ Examples:
 "I supply cement" → userType: "vendor", suggestedStep: "vendor_confirm"
 "I need cement" → userType: "buyer", suggestedStep: "confirm"`;
 
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek/deepseek-chat',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.1,
-          max_tokens: 200
-        })
-      });
-
-      const result = await response.json();
-      const aiResponse = result.choices[0].message.content;
-
+      const aiResponse = await this.callHuggingFaceGeneration(prompt, 200);
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
       const parsed = JSON.parse(jsonMatch[0]);
+
+      // Override userType based on classification if more confident
+      if (classification.confidence > 0.8) {
+        if (classification.messageType === 'vendor_registration') {
+          parsed.userType = 'vendor';
+          parsed.suggestedStep = 'vendor_confirm';
+        } else if (classification.messageType === 'customer_inquiry') {
+          parsed.userType = 'buyer';
+          parsed.suggestedStep = 'confirm';
+        }
+      }
 
       return {
         extracted: parsed.confidence > 0.7,
@@ -199,61 +237,69 @@ Examples:
     reasoning?: string;
   }> {
     try {
-      const prompt = `Classify this message type: "${message}"
-
-IMPORTANT RULES:
-- "customer_inquiry": Customer asking for prices/quotes (contains "I need", "looking for", "require", "want to buy")
-- "vendor_rate_update": Vendor providing/updating rates (contains specific prices like "cement 350", "rate 380", "my rates")  
-- "vendor_registration": Vendor introducing business (contains "I supply", "I sell", "dealer", "business")
-- "sale_entry": Recording completed sales (contains "sold", "delivered", "supplied", "transaction")
-- "general_chat": Greetings, help requests, casual conversation
-
-Return JSON:
-{
-  "messageType": "customer_inquiry" or "vendor_rate_update" or "vendor_registration" or "sale_entry" or "general_chat",
-  "confidence": 0.0-1.0,
-  "reasoning": "brief explanation"
-}
-
-Examples:
-"Hey I will need 34 bags of cement Right now in Guwahati Beltola" → messageType: "customer_inquiry"
-"My cement rate is 350 per bag today" → messageType: "vendor_rate_update"  
-"I supply cement and TMT in Mumbai" → messageType: "vendor_registration"
-"Sold 50 bags to ABC company yesterday" → messageType: "sale_entry"`;
-
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      // Use Hugging Face BART for zero-shot classification
+      const response = await fetch(`${this.hfBaseUrl}/facebook/bart-large-mnli`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          'Authorization': `Bearer ${this.hfApiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'deepseek/deepseek-chat',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.1,
-          max_tokens: 150
+          inputs: message,
+          parameters: {
+            candidate_labels: [
+              "vendor registration supplier introducing business",
+              "customer inquiry asking for prices materials", 
+              "vendor rate update providing current prices",
+              "sale entry recording completed transaction",
+              "general chat greetings casual conversation"
+            ]
+          }
         })
       });
 
       const result = await response.json();
-      const aiResponse = result.choices[0].message.content;
+      console.log('🔍 HF Classification Response:', result);
 
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch[0]);
+      // Handle Hugging Face response format
+      if (result.labels && result.scores) {
+        const topLabel = result.labels[0];
+        const confidence = result.scores[0];
 
-      return {
-        messageType: parsed.messageType,
-        confidence: parsed.confidence || 0,
-        reasoning: parsed.reasoning
-      };
+        let messageType: string;
+        if (topLabel.includes('vendor registration')) {
+          messageType = 'vendor_registration';
+        } else if (topLabel.includes('customer inquiry')) {
+          messageType = 'customer_inquiry';
+        } else if (topLabel.includes('vendor rate update')) {
+          messageType = 'vendor_rate_update';
+        } else if (topLabel.includes('sale entry')) {
+          messageType = 'sale_entry';
+        } else {
+          messageType = 'general_chat';
+        }
+
+        return {
+          messageType: messageType as any,
+          confidence: confidence,
+          reasoning: `HF: ${topLabel} (${Math.round(confidence * 100)}%)`
+        };
+      } else {
+        throw new Error('Invalid HF response format');
+      }
 
     } catch (error) {
-      console.error('Message classification failed:', error);
-      return {
-        messageType: 'general_chat',
-        confidence: 0,
-        reasoning: 'Classification failed'
-      };
+      console.error('HF Classification failed:', error);
+      
+      // Fallback to simple keyword matching
+      const lowerMessage = message.toLowerCase();
+      if (lowerMessage.includes('i sell') || lowerMessage.includes('i supply') || lowerMessage.includes('dealer') || lowerMessage.includes('business')) {
+        return { messageType: 'vendor_registration', confidence: 0.8, reasoning: 'Keyword fallback: vendor' };
+      } else if (lowerMessage.includes('i need') || lowerMessage.includes('require') || lowerMessage.includes('looking for')) {
+        return { messageType: 'customer_inquiry', confidence: 0.8, reasoning: 'Keyword fallback: customer' };
+      } else {
+        return { messageType: 'general_chat', confidence: 0.5, reasoning: 'Fallback: general' };
+      }
     }
   }
 
@@ -293,23 +339,7 @@ Examples:
 "Sold 50 bags cement to ABC company for 350 per bag" → sales_type: "cement", cement_company: "ABC company", cement_qty: "50 bags", cement_price: 350
 "Delivered TMT bars 8mm 2 tons to XYZ project" → sales_type: "tmt", tmt_company: "XYZ project", tmt_sizes: "8mm", tmt_quantities: "2 tons"`;
 
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek/deepseek-chat',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.1,
-          max_tokens: 300
-        })
-      });
-
-      const result = await response.json();
-      const aiResponse = result.choices[0].message.content;
-
+      const aiResponse = await this.callHuggingFaceGeneration(prompt, 300);
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
       const parsed = JSON.parse(jsonMatch[0]);
 
